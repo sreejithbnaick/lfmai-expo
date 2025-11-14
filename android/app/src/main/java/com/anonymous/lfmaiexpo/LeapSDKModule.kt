@@ -4,11 +4,15 @@ import android.util.Log
 import com.facebook.react.bridge.*
 import com.facebook.react.modules.core.DeviceEventManagerModule
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.onCompletion
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.collect
 import ai.liquid.leap.LeapClient
 import ai.liquid.leap.LeapModelLoadingException
 import ai.liquid.leap.ModelRunner
 import ai.liquid.leap.Conversation
-import ai.liquid.leap.MessageResponse
+import ai.liquid.leap.message.MessageResponse
 
 class LeapSDKModule(reactContext: ReactApplicationContext) : ReactContextBaseJavaModule(reactContext) {
     private val TAG = "LeapSDKModule"
@@ -67,73 +71,58 @@ class LeapSDKModule(reactContext: ReactApplicationContext) : ReactContextBaseJav
         }
 
         generationJob?.cancel()
-
-        scope.launch {
-            try {
-                val responseBuilder = StringBuilder()
-
-                generationJob = launch {
-                    try {
-                        conversation.generateResponse(input)
-                            .onEach { response ->
-                                when (response) {
-                                    is MessageResponse.Chunk -> {
-                                        responseBuilder.append(response.text)
-                                        sendEvent("onChunk", createMap().apply {
-                                            putString("text", response.text)
-                                            putString("type", "chunk")
-                                        })
-                                    }
-                                    is MessageResponse.ReasoningChunk -> {
-                                        sendEvent("onChunk", createMap().apply {
-                                            putString("text", response.text)
-                                            putString("type", "reasoning")
-                                        })
-                                    }
-                                    else -> {}
-                                }
-                            }
-                            .onCompletion { cause ->
-                                if (cause == null) {
-                                    val fullResponse = responseBuilder.toString()
-                                    sendEvent("onComplete", createMap().apply {
-                                        putString("text", fullResponse)
-                                    })
-                                    promise.resolve(createMap().apply {
-                                        putString("text", fullResponse)
-                                    })
-                                } else {
-                                    val errorMsg = "Error in generation: ${cause.message}"
-                                    Log.e(TAG, errorMsg, cause)
-                                    sendEvent("onError", createMap().apply {
-                                        putString("error", errorMsg)
-                                    })
-                                    promise.reject("GENERATION_ERROR", errorMsg, cause)
-                                }
-                            }
-                            .catch { exception ->
-                                val errorMsg = "Error in generation: ${exception.message}"
-                                Log.e(TAG, errorMsg, exception)
-                                sendEvent("onError", createMap().apply {
-                                    putString("error", errorMsg)
-                                })
-                                promise.reject("GENERATION_ERROR", errorMsg, exception)
-                            }
-                            .collect()
-                    } catch (e: Exception) {
-                        val errorMsg = "Failed to collect response: ${e.message}"
-                        Log.e(TAG, errorMsg, e)
-                        sendEvent("onError", createMap().apply {
-                            putString("error", errorMsg)
+        
+        generationJob = scope.launch {
+            val responseBuilder = StringBuilder()
+            conversation.generateResponse(input).onEach { response ->
+                when (response) {
+                    is MessageResponse.Chunk -> {
+                        Log.d(TAG, "text chunk: ${response.text}")
+                        responseBuilder.append(response.text)
+                            sendEvent("onChunk", createMap().apply {
+                                putString("text", response.text)
+                                putString("type", "chunk")
                         })
-                        promise.reject("GENERATION_ERROR", errorMsg, e)
+                    }
+                    is MessageResponse.ReasoningChunk -> {
+                        Log.d(TAG, "reasoning chunk: ${response.toString()}")
+                        sendEvent("onChunk", createMap().apply {
+                            putString("text", response.toString())
+                            putString("type", "reasoning")
+                        })
+                    }
+                    else -> {
+                        // ignore other response
                     }
                 }
-            } catch (e: Exception) {
-                val errorMsg = "Failed to start generation: ${e.message}"
-                Log.e(TAG, errorMsg, e)
-                promise.reject("GENERATION_START_ERROR", errorMsg, e)
-            }
+            }.onCompletion { cause ->
+                Log.d(TAG, "Generation done!")
+                if (cause == null) {
+                    val fullResponse = responseBuilder.toString()
+                    sendEvent("onComplete", createMap().apply {
+                        putString("text", fullResponse)
+                    })
+                    promise.resolve(createMap().apply {
+                        putString("text", fullResponse)
+                    })
+                } else {
+                    val errorMsg = "Error in generation: ${cause.message}"
+                    Log.e(TAG, errorMsg, cause)
+                    sendEvent("onError", createMap().apply {
+                        putString("error", errorMsg)
+                    })
+                    promise.reject("GENERATION_ERROR", errorMsg, cause)
+                }
+            }.catch { exception ->
+                Log.e(TAG, "Error in generation: $exception")
+                
+                val errorMsg = "Error in generation: ${exception.message}"
+                Log.e(TAG, errorMsg, exception)
+                sendEvent("onError", createMap().apply {
+                    putString("error", errorMsg)
+                })
+                promise.reject("GENERATION_ERROR", errorMsg, exception)
+            }.collect()
         }
     }
 
