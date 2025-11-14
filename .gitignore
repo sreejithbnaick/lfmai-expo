@@ -40,4 +40,10 @@ app-example
 
 # generated native folders
 /ios
-/android
+# /android - keeping android folder in git for native SDK implementation
+# But ignore build artifacts
+/android/app/build/
+/android/build/
+/android/.gradle/
+/android/local.properties
+/android/app/release/
